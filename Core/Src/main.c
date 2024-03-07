@@ -51,8 +51,19 @@ UART_HandleTypeDef huart2;
 
 // osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
+typedef struct APP_CMD
+{
+  uint8_t COMMAND_NUM;
+  uint8_t COMMAND_ARGS[10];
+} APP_CMD_t;
+
 TaskHandle_t MenueTask_Handler;
 TaskHandle_t AnimationTask_Handler;
+TaskHandle_t ComdHandleTask_Handler;
+TaskHandle_t CmdProcessTask_Handler;
+
+QueueHandle_t command_queue = NULL;
+QueueHandle_t uart_write_queue = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,12 +74,16 @@ static void MX_USART2_UART_Init(void);
 
 /* USER CODE BEGIN PFP */
 void msDelay(uint32_t msTime);
+uint8_t getCommandCode(uint8_t *buffer);
+void getArguments(uint8_t *buffer);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void Menue_Task(void *argument);
 void Animation_Task(void *argument);
+void ComdHandle_Task(void *argument);
+void CmdProcess_Task(void *argument);
 // This is the menu
 char menu[] = {"\
 \r\nStart Animation in Terminal     ----> 1 \
@@ -134,6 +149,8 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  command_queue = xQueueCreate(10, sizeof(APP_CMD_t *));
+  uart_write_queue = xQueueCreate(10, sizeof(char *));
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -143,12 +160,21 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
-  xTaskCreate(Menue_Task, "MENUE", 256, NULL, 3, &MenueTask_Handler);
-  xTaskCreate(Animation_Task, "ANIMATION", 512, NULL, 3, &AnimationTask_Handler);
+  if ((command_queue != NULL) && (uart_write_queue != NULL))
+  {
+    xTaskCreate(Menue_Task, "MENUE", 256, NULL, 1, &MenueTask_Handler);
+    xTaskCreate(Animation_Task, "ANIMATION", 512, NULL, 2, &AnimationTask_Handler);
+    xTaskCreate(ComdHandle_Task, "CMDHNDL", 512, NULL, 2, &ComdHandleTask_Handler);
+    xTaskCreate(CmdProcess_Task, "ANIMATION", 512, NULL, 2, &CmdProcessTask_Handler);
+    vTaskStartScheduler();
+  }
+  else
+  {
+    HAL_UART_Transmit(&huart2, "Queue creation failed\r\n", strlen("Queue creation failed\r\n"), HAL_MAX_DELAY);
+  }
   //  xTaskCreate(MPT_Task, "MPT", 128, NULL, 2, &MPT_Handler);
   //  xTaskCreate(LPT_Task, "LPT", 128, NULL, 1, &MPT_Handler);
 
-  vTaskStartScheduler();
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -287,6 +313,16 @@ void msDelay(uint32_t msTime)
     ;
 }
 
+uint8_t getCommandCode(uint8_t *buffer)
+{
+
+  return buffer[0] - 48;
+}
+
+void getArguments(uint8_t *buffer)
+{
+}
+
 void Menue_Task(void *argument)
 {
   //	uint8_t *strtosend = "IN HPT===========================\n";
@@ -302,54 +338,116 @@ void Menue_Task(void *argument)
 
 void Animation_Task(void *argument)
 {
-  while(1)
+  while (1)
   {
     HAL_UART_Transmit(&huart2, animation, strlen(animation), HAL_MAX_DELAY);
-    int l=0, r=22, m = 11;
-    while(l<=r){
-      for(int i=0;i<=22;i++){
-          if(i==l || i==r){
-              HAL_UART_Transmit(&huart2, "*", 1, HAL_MAX_DELAY);
-          }else if(i==m){
-              HAL_UART_Transmit(&huart2, "|", 1, HAL_MAX_DELAY);
-          }else{
-              HAL_UART_Transmit(&huart2, " ", 1, HAL_MAX_DELAY);
-          }
+    int l = 0, r = 22, m = 11;
+    while (l <= r)
+    {
+      for (int i = 0; i <= 22; i++)
+      {
+        if (i == l || i == r)
+        {
+          HAL_UART_Transmit(&huart2, "*", 1, HAL_MAX_DELAY);
+        }
+        else if (i == m)
+        {
+          HAL_UART_Transmit(&huart2, "|", 1, HAL_MAX_DELAY);
+        }
+        else
+        {
+          HAL_UART_Transmit(&huart2, " ", 1, HAL_MAX_DELAY);
+        }
       }
       ++l;
       --r;
       HAL_UART_Transmit(&huart2, "\n", 1, HAL_MAX_DELAY);
-
-    }    
-/*
-    for (uint8_t j = 0; j < 12; j++)
-    {
-      uint8_t buff[23];
-      uint8_t k = 100;
-      uint8_t p = 100;
-      for (uint8_t i = 0; i < 23; i++)
-      {
-        if(i == 11) {
-          buff[i] = '|';
-        } else if(i == 0){
-          buff[0] = ' ';
-          buff[i+j] = '*';
-          k = i+j;
-        } else if(i == 22){
-          buff[22] = ' ';
-          buff[i-j] = '*';
-          p = i-j;
-        } else {
-          buff[i] = ' ';
-        }
-      }
-      buff[k] = '*';
-      buff[p] = '*';
-      HAL_UART_Transmit(&huart2, buff, strlen(buff), HAL_MAX_DELAY);
-      HAL_UART_Transmit(&huart2, "\n", 1, HAL_MAX_DELAY);
     }
-*/
-    xTaskNotifyWait(0, 0, NULL, portMAX_DELAY); 
+    /*
+        for (uint8_t j = 0; j < 12; j++)
+        {
+          uint8_t buff[23];
+          uint8_t k = 100;
+          uint8_t p = 100;
+          for (uint8_t i = 0; i < 23; i++)
+          {
+            if(i == 11) {
+              buff[i] = '|';
+            } else if(i == 0){
+              buff[0] = ' ';
+              buff[i+j] = '*';
+              k = i+j;
+            } else if(i == 22){
+              buff[22] = ' ';
+              buff[i-j] = '*';
+              p = i-j;
+            } else {
+              buff[i] = ' ';
+            }
+          }
+          buff[k] = '*';
+          buff[p] = '*';
+          HAL_UART_Transmit(&huart2, buff, strlen(buff), HAL_MAX_DELAY);
+          HAL_UART_Transmit(&huart2, "\n", 1, HAL_MAX_DELAY);
+        }
+    */
+    xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
+  }
+}
+
+void ComdHandle_Task(void *argument)
+{
+  uint8_t command_code = 0;
+
+  APP_CMD_t *new_cmd;
+
+  while (1)
+  {
+    xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
+    // 1. send command to queue
+    new_cmd = (APP_CMD_t *)pvPortMalloc(sizeof(APP_CMD_t));
+
+    taskENTER_CRITICAL();
+    command_code = getCommandCode(rx_buffer);
+    new_cmd->COMMAND_NUM = command_code;
+    getArguments(new_cmd->COMMAND_ARGS);
+    taskEXIT_CRITICAL();
+
+    // send the command to the command queue
+    xQueueSend(command_queue, &new_cmd, portMAX_DELAY);
+  }
+}
+
+void CmdProcess_Task(void *argument)
+{
+  while (1)
+  {
+    APP_CMD_t *cmd;
+    xQueueReceive(command_queue, &cmd, portMAX_DELAY);
+    if (cmd->COMMAND_NUM == 1)
+    {
+      xTaskNotify(AnimationTask_Handler, 0, eNoAction);
+    }
+    else if (cmd->COMMAND_NUM == 2)
+    {
+      char *str = "\nBlink LEDs ID space Delay       ----> 2 \r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd->COMMAND_NUM == 3)
+    {
+      char *str = "\nStop all LEDs blinking          ----> 3 \r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd->COMMAND_NUM == 4)
+    {
+      char *str = "\nClose the terminal              ----> 4 \r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd->COMMAND_NUM == 0)
+    {
+      char *str = "\nWrite \"I am amazing\" :          ----> 0\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
   }
 }
 
@@ -369,7 +467,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     if (rx_data == '\r')
     {
       rx_index = 0;
-      xTaskNotifyFromISR(AnimationTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
+      // xTaskNotifyFromISR(AnimationTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
+      xTaskNotifyFromISR(MenueTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
+      xTaskNotifyFromISR(ComdHandleTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
     }
 
     // Receive next character (1 byte)
