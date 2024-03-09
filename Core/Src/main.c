@@ -64,6 +64,8 @@ TaskHandle_t CmdProcessTask_Handler;
 
 QueueHandle_t command_queue = NULL;
 QueueHandle_t uart_write_queue = NULL;
+
+TimerHandle_t led_timer_handle = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,6 +78,13 @@ static void MX_USART2_UART_Init(void);
 void msDelay(uint32_t msTime);
 uint8_t getCommandCode(uint8_t *buffer);
 void getArguments(uint8_t *buffer);
+void led_toggle(TimerHandle_t xTimer);
+void led_toggle_start(uint32_t duration);
+void led_toggle_stop(void);
+void deleteAllTasks(void);
+void vApplicationGetTimerTaskMemory( StaticTask_t ** ppxTimerTaskTCBBuffer,
+                                     StackType_t ** ppxTimerTaskStackBuffer,
+                                     uint32_t * pulTimerTaskStackSize );
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -98,6 +107,8 @@ char animation[] = {"\
 uint8_t rx_buffer[50];
 uint8_t rx_index = 0;
 uint8_t rx_data = 'l';
+uint8_t LED_ID = 1;
+uint16_t LED_ID_ARRAY[] = {GPIO_PIN_12, GPIO_PIN_13, GPIO_PIN_14, GPIO_PIN_15};
 /* USER CODE END 0 */
 
 /**
@@ -321,6 +332,11 @@ uint8_t getCommandCode(uint8_t *buffer)
 
 void getArguments(uint8_t *buffer)
 {
+  uint8_t cnt = 1;
+  while(rx_buffer[cnt] != '\r'){
+    cnt++;
+    buffer[cnt-1] = rx_buffer[cnt] - 48;
+  }
 }
 
 void Menue_Task(void *argument)
@@ -426,22 +442,28 @@ void CmdProcess_Task(void *argument)
     xQueueReceive(command_queue, &cmd, portMAX_DELAY);
     if (cmd->COMMAND_NUM == 1)
     {
+      char *str = "\nStraing the Animation           ----> 1 \r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);      
       xTaskNotify(AnimationTask_Handler, 0, eNoAction);
     }
     else if (cmd->COMMAND_NUM == 2)
     {
       char *str = "\nBlink LEDs ID space Delay       ----> 2 \r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      led_toggle_start(cmd->COMMAND_ARGS[3]);
+      LED_ID = cmd->COMMAND_ARGS[1];
     }
     else if (cmd->COMMAND_NUM == 3)
     {
       char *str = "\nStop all LEDs blinking          ----> 3 \r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      led_toggle_stop();
     }
     else if (cmd->COMMAND_NUM == 4)
     {
-      char *str = "\nClose the terminal              ----> 4 \r\n";
+      char *str = "\nClosing the terminal, Need to restart the MCU ----> 4 \r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      deleteAllTasks();
     }
     else if (cmd->COMMAND_NUM == 0)
     {
@@ -481,6 +503,77 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+void led_toggle_stop(void)
+{
+	 xTimerStop(led_timer_handle,portMAX_DELAY);
+   HAL_GPIO_WritePin(GPIOD,LED_ID_ARRAY[LED_ID - 1],GPIO_PIN_RESET);
+}
+
+void led_toggle(TimerHandle_t xTimer)
+{
+  HAL_GPIO_TogglePin(GPIOD,LED_ID_ARRAY[LED_ID - 1]);
+}
+
+void led_toggle_start(uint32_t duration)
+{
+  uint32_t toggle_duration = pdMS_TO_TICKS(duration*1000);
+
+	if(led_timer_handle == NULL)
+	{
+		//1. lets create the software timer
+		led_timer_handle = xTimerCreate("LED-TIMER",toggle_duration,pdTRUE,NULL,led_toggle);
+
+		//2. start the software timer
+		xTimerStart(led_timer_handle,portMAX_DELAY);
+	}
+	else
+	{
+		//start the software timer
+    HAL_GPIO_WritePin(GPIOD,LED_ID_ARRAY[LED_ID - 1],GPIO_PIN_RESET);
+    xTimerChangePeriod(led_timer_handle,toggle_duration,portMAX_DELAY);
+		xTimerStart(led_timer_handle,portMAX_DELAY);
+	}
+}
+
+void deleteAllTasks(void)
+{
+  vTaskDelete(MenueTask_Handler);
+  vTaskDelete(AnimationTask_Handler);
+  vTaskDelete(ComdHandleTask_Handler);
+  vTaskDelete(CmdProcessTask_Handler);
+}
+
+/*-----------------------------------------------------------*/
+
+/**
+ * @brief This is to provide the memory that is used by the RTOS daemon/time task.
+ *
+ * If configUSE_STATIC_ALLOCATION is set to 1, so the application must provide an
+ * implementation of vApplicationGetTimerTaskMemory() to provide the memory that is
+ * used by the RTOS daemon/time task.
+ */
+void vApplicationGetTimerTaskMemory( StaticTask_t ** ppxTimerTaskTCBBuffer,
+                                     StackType_t ** ppxTimerTaskStackBuffer,
+                                     uint32_t * pulTimerTaskStackSize )
+{
+    /* If the buffers to be provided to the Timer task are declared inside this
+     * function then they must be declared static - otherwise they will be allocated on
+     * the stack and so not exists after this function exits. */
+    static StaticTask_t xTimerTaskTCB;
+    static StackType_t uxTimerTaskStack[ configTIMER_TASK_STACK_DEPTH ];
+
+    /* Pass out a pointer to the StaticTask_t structure in which the Idle
+     * task's state will be stored. */
+    *ppxTimerTaskTCBBuffer = &xTimerTaskTCB;
+
+    /* Pass out the array that will be used as the Timer task's stack. */
+    *ppxTimerTaskStackBuffer = uxTimerTaskStack;
+
+    /* Pass out the size of the array pointed to by *ppxTimerTaskStackBuffer.
+     * Note that, as the array is necessarily of type StackType_t,
+     * configMINIMAL_STACK_SIZE is specified in words, not bytes. */
+    *pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
