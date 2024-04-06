@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 // #include "cmsis_os.h"
+#include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -29,6 +30,9 @@
 #include "semphr.h"
 #include "string.h"
 #include "stdio.h"
+
+#include "DHT11.h"
+#include "File_Handling_RTOS.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +51,11 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 RTC_HandleTypeDef hrtc;
+
+SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart2;
 
@@ -59,6 +67,8 @@ typedef struct APP_CMD
   uint8_t COMMAND_ARGS[10];
 } APP_CMD_t;
 
+#define LED_COUNT 4
+
 TaskHandle_t MenueTask_Handler;
 TaskHandle_t AnimationTask_Handler;
 TaskHandle_t ComdHandleTask_Handler;
@@ -67,7 +77,17 @@ TaskHandle_t CmdProcessTask_Handler;
 QueueHandle_t command_queue = NULL;
 QueueHandle_t uart_write_queue = NULL;
 
-TimerHandle_t led_timer_handle = NULL;
+void led1_toggle(TimerHandle_t xTimer);
+void led2_toggle(TimerHandle_t xTimer);
+void led3_toggle(TimerHandle_t xTimer);
+void led4_toggle(TimerHandle_t xTimer);
+void (*led_toggle_array[4])(TimerHandle_t xTimer) = { &led1_toggle, &led2_toggle, &led3_toggle, &led4_toggle };
+TimerHandle_t led1_timer_handle = NULL;
+TimerHandle_t led2_timer_handle = NULL;
+TimerHandle_t led3_timer_handle = NULL;
+TimerHandle_t led4_timer_handle = NULL;
+TimerHandle_t led_timer_handle_array[LED_COUNT]; // = {led1_timer_handle, led2_timer_handle, led3_timer_handle, led4_timer_handle};
+TimerHandle_t data_log_timer_handle = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -75,17 +95,22 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_RTC_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_SPI1_Init(void);
 // void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void msDelay(uint32_t msTime);
 uint8_t getCommandCode(uint8_t *buffer);
 void getArguments(uint8_t *buffer);
-void led_toggle(TimerHandle_t xTimer);
+// void led_toggle(TimerHandle_t xTimer);
 void led_toggle_start(uint32_t duration);
 void led_toggle_stop(void);
 void deleteAllTasks(void);
 void getDateTime(void);
+void startSensorDataLogging(uint32_t duration);
+void stopSensorDataLogging(void);
+void log_sensor_data(TimerHandle_t xTimer);
 void vApplicationGetTimerTaskMemory( StaticTask_t ** ppxTimerTaskTCBBuffer,
                                      StackType_t ** ppxTimerTaskStackBuffer,
                                      uint32_t * pulTimerTaskStackSize );
@@ -103,6 +128,7 @@ char menu[] = {"\
 \r\nBlink LEDs ID space Delay       ----> 2 \
 \r\nStop all LEDs blinking          ----> 3 \
 \r\nGet current date and time       ----> 4 \
+\r\nStart Sensor Data Logging       ----> 5 \
 \r\nClose the terminal              ----> 0 \
 \r\n"};
 
@@ -111,9 +137,12 @@ char animation[] = {"\
 
 uint8_t rx_buffer[50];
 uint8_t rx_index = 0;
-uint8_t rx_data = 'l';
+uint8_t rx_data = '\r';
 uint8_t LED_ID = 1;
 uint16_t LED_ID_ARRAY[] = {GPIO_PIN_12, GPIO_PIN_13, GPIO_PIN_14, GPIO_PIN_15};
+
+uint16_t ADC_VAL;
+int indx=1;
 /* USER CODE END 0 */
 
 /**
@@ -123,7 +152,10 @@ uint16_t LED_ID_ARRAY[] = {GPIO_PIN_12, GPIO_PIN_13, GPIO_PIN_14, GPIO_PIN_15};
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+  led_timer_handle_array[0] = led1_timer_handle;
+  led_timer_handle_array[1] = led2_timer_handle;
+  led_timer_handle_array[2] = led3_timer_handle;
+  led_timer_handle_array[3] = led4_timer_handle;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -146,8 +178,18 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_RTC_Init();
+  MX_ADC1_Init();
+  MX_SPI1_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart2, &rx_data, 1);
+
+  Mount_SD("/");
+  Format_SD();
+  Create_File("ADC_DATA.TXT");
+  // Create_File("TEMP.TXT");
+  Unmount_SD("/");  
+
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -180,7 +222,7 @@ int main(void)
     xTaskCreate(Menue_Task, "MENUE", 512, NULL, 1, &MenueTask_Handler);
     xTaskCreate(Animation_Task, "ANIMATION", 512, NULL, 2, &AnimationTask_Handler);
     xTaskCreate(ComdHandle_Task, "CMDHNDL", 512, NULL, 2, &ComdHandleTask_Handler);
-    xTaskCreate(CmdProcess_Task, "ANIMATION", 512, NULL, 2, &CmdProcessTask_Handler);
+    xTaskCreate(CmdProcess_Task, "CMDPROCESS", 512, NULL, 2, &CmdProcessTask_Handler);
     vTaskStartScheduler();
   }
   else
@@ -259,6 +301,58 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -366,6 +460,44 @@ static void MX_RTC_Init(void)
 }
 
 /**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -415,7 +547,23 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : PA0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PA4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PD12 PD13 PD14 PD15 */
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
@@ -561,8 +709,8 @@ void CmdProcess_Task(void *argument)
     {
       char *str = "\nBlinking the LED...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      led_toggle_start(cmd->COMMAND_ARGS[3]);
       LED_ID = cmd->COMMAND_ARGS[1];
+      led_toggle_start(cmd->COMMAND_ARGS[3]);
     }
     else if (cmd->COMMAND_NUM == 3)
     {
@@ -581,6 +729,12 @@ void CmdProcess_Task(void *argument)
       char *str = "\n Current date and time...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
       getDateTime();
+    }    
+    else if (cmd->COMMAND_NUM == 5)
+    {
+      char *str = "\nStarting sensor data logging...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      startSensorDataLogging(cmd->COMMAND_ARGS[1]);
     }    
     else
     {
@@ -630,34 +784,103 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void led_toggle_stop(void)
 {
-	 xTimerStop(led_timer_handle,portMAX_DELAY);
-   HAL_GPIO_WritePin(GPIOD,LED_ID_ARRAY[LED_ID - 1],GPIO_PIN_RESET);
+  for (uint8_t p = 0; p < LED_COUNT; p++)
+  {
+    xTimerStop(led_timer_handle_array[p], portMAX_DELAY);
+    HAL_GPIO_WritePin(GPIOD,LED_ID_ARRAY[p],GPIO_PIN_RESET);
+  }
 }
 
-void led_toggle(TimerHandle_t xTimer)
+void led1_toggle(TimerHandle_t xTimer)
 {
-  HAL_GPIO_TogglePin(GPIOD,LED_ID_ARRAY[LED_ID - 1]);
+  HAL_GPIO_TogglePin(GPIOD,LED_ID_ARRAY[0]);
+}
+
+void led2_toggle(TimerHandle_t xTimer)
+{
+  HAL_GPIO_TogglePin(GPIOD,LED_ID_ARRAY[1]);
+}
+
+void led3_toggle(TimerHandle_t xTimer)
+{
+  HAL_GPIO_TogglePin(GPIOD,LED_ID_ARRAY[2]);
+}
+
+void led4_toggle(TimerHandle_t xTimer)
+{
+  HAL_GPIO_TogglePin(GPIOD,LED_ID_ARRAY[3]);
 }
 
 void led_toggle_start(uint32_t duration)
 {
   uint32_t toggle_duration = pdMS_TO_TICKS(duration*1000);
 
-	if(led_timer_handle == NULL)
+	if(led_timer_handle_array[LED_ID - 1] == NULL)
 	{
 		//1. lets create the software timer
-		led_timer_handle = xTimerCreate("LED-TIMER",toggle_duration,pdTRUE,NULL,led_toggle);
+		led_timer_handle_array[LED_ID - 1] = xTimerCreate("LED-TIMER", toggle_duration, pdTRUE, NULL, led_toggle_array[LED_ID - 1]);
 
 		//2. start the software timer
-		xTimerStart(led_timer_handle,portMAX_DELAY);
+		xTimerStart(led_timer_handle_array[LED_ID - 1], portMAX_DELAY);
 	}
 	else
 	{
 		//start the software timer
     HAL_GPIO_WritePin(GPIOD,LED_ID_ARRAY[LED_ID - 1],GPIO_PIN_RESET);
-    xTimerChangePeriod(led_timer_handle,toggle_duration,portMAX_DELAY);
-		xTimerStart(led_timer_handle,portMAX_DELAY);
+    xTimerChangePeriod(led_timer_handle_array[LED_ID - 1],toggle_duration,portMAX_DELAY);
+		xTimerStart(led_timer_handle_array[LED_ID - 1],portMAX_DELAY);
 	}
+}
+
+void startSensorDataLogging(uint32_t duration)
+{
+  uint32_t logging_duration = pdMS_TO_TICKS(duration*1000);
+  if(data_log_timer_handle == NULL)
+  {
+    //1. lets create the software timer
+    data_log_timer_handle = xTimerCreate("SENSOR-TIMER",logging_duration,pdTRUE,NULL,log_sensor_data);
+
+    //2. start the software timer
+    xTimerStart(data_log_timer_handle,portMAX_DELAY);
+  }
+  else
+  {
+    //start the software timer
+    // xTimerChangePeriod(data_log_timer_handle,logging_duration,portMAX_DELAY);
+    int indx=1;
+    xTimerStart(data_log_timer_handle,portMAX_DELAY);
+  }
+}
+
+void log_sensor_data(TimerHandle_t xTimer)
+{
+  // int indx=1;
+
+  HAL_ADC_Start(&hadc1);
+  HAL_ADC_PollForConversion(&hadc1, 10);
+  ADC_VAL = HAL_ADC_GetValue(&hadc1);
+  HAL_ADC_Stop(&hadc1);
+
+  char *buffer = pvPortMalloc(50*sizeof(char));
+  sprintf (buffer, "%d. %u\n", indx,ADC_VAL);
+  Mount_SD("/");
+  // Check_SD_Space();
+  Update_File("ADC_DATA.TXT", buffer);
+
+  // char *str = "\nStarting sensor data logging...\r\n";
+  HAL_UART_Transmit(&huart2, buffer, strlen(buffer), HAL_MAX_DELAY);  
+  // sprintf (buffer, "%d. Temp = %d C\t RH = %d \n",indx, Temperature, Humidity);
+  // Update_File("TEMP.TXT", buffer);
+  vPortFree(buffer);
+  Unmount_SD("/");
+
+  indx++;
+}
+
+void stopSensorDataLogging(void)
+{
+  int indx=1;
+  xTimerStop(data_log_timer_handle,portMAX_DELAY);
 }
 
 void deleteAllTasks(void)
