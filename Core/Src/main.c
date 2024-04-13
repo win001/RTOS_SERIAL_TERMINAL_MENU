@@ -128,7 +128,12 @@ char menu[] = {"\
 \r\nBlink LEDs ID space Delay       ----> 2 \
 \r\nStop all LEDs blinking          ----> 3 \
 \r\nGet current date and time       ----> 4 \
-\r\nStart Sensor Data Logging       ----> 5 \
+\r\nSet the current date            ----> 5 \
+\r\nSet the current time            ----> 6 \
+\r\nStart Data Logging              ----> 7 \
+\r\nStop data logging               ----> 8 \
+\r\nGet the data logged             ----> 9 \
+\r\nSet Alarm date and tim          ----> 10 \
 \r\nClose the terminal              ----> 0 \
 \r\n"};
 
@@ -718,23 +723,49 @@ void CmdProcess_Task(void *argument)
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
       led_toggle_stop();
     }
+    else if (cmd->COMMAND_NUM == 4)
+    {
+      char *str = "\nCurrent date and time...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      getDateTime();
+    }
+    else if (cmd->COMMAND_NUM == 5)
+    {
+      char *str = "\nSetting the current date...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd->COMMAND_NUM == 6)
+    {
+      char *str = "\nSetting the current time...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd->COMMAND_NUM == 7)
+    {
+      char *str = "\nStarting sensor data logging...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      startSensorDataLogging(cmd->COMMAND_ARGS[1]);
+    }
+    else if (cmd->COMMAND_NUM == 8)
+    {
+      char *str = "\nStopping sensor data logging...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      stopSensorDataLogging();
+    }
+    else if (cmd->COMMAND_NUM == 9)
+    {
+      char *str = "\nGetting the data logged...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd->COMMAND_NUM == 10)
+    {
+      char *str = "\nSetting Alarm timing...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
     else if (cmd->COMMAND_NUM == 0)
     {
       char *str = "\nClosing the terminal... Need to restart the MCU\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
       deleteAllTasks();
-    }
-    else if (cmd->COMMAND_NUM == 4)
-    {
-      char *str = "\n Current date and time...\r\n";
-      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      getDateTime();
-    }    
-    else if (cmd->COMMAND_NUM == 5)
-    {
-      char *str = "\nStarting sensor data logging...\r\n";
-      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      startSensorDataLogging(cmd->COMMAND_ARGS[1]);
     }    
     else
     {
