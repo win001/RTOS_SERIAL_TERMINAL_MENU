@@ -17,5 +17,12 @@
 9. Delete logged data
 
 10. Set alarm date time [need to define alarm function]
+    1. set to close app
+    2. set to stop data logging
+    3. set to start data logging
+    4. set to stop all blinking LEDs
+    5. 
 
 11. Why initially (default) animation is getting printed
+
+12. see how global variables accessed in rtos

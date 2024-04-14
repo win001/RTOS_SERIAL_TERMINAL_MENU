@@ -30,6 +30,7 @@
 #include "semphr.h"
 #include "string.h"
 #include "stdio.h"
+#include "stdbool.h"
 
 #include "DHT11.h"
 #include "File_Handling_RTOS.h"
@@ -47,7 +48,9 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+#define INVALID_COMMAND 100
+#define COMMAND 0
+#define ARGUMENT 1
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -66,6 +69,10 @@ typedef struct APP_CMD
   uint8_t COMMAND_NUM;
   uint8_t COMMAND_ARGS[10];
 } APP_CMD_t;
+// typedef struct APP_ARG
+// {
+//   uint8_t COMMAND_ARGS[10];
+// } APP_ARG_t;
 
 #define LED_COUNT 4
 
@@ -73,8 +80,10 @@ TaskHandle_t MenueTask_Handler;
 TaskHandle_t AnimationTask_Handler;
 TaskHandle_t ComdHandleTask_Handler;
 TaskHandle_t CmdProcessTask_Handler;
+TaskHandle_t ArgProcessTask_Handler;
 
 QueueHandle_t command_queue = NULL;
+QueueHandle_t argument_queue = NULL;
 QueueHandle_t uart_write_queue = NULL;
 
 void led1_toggle(TimerHandle_t xTimer);
@@ -102,7 +111,10 @@ static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 void msDelay(uint32_t msTime);
 uint8_t getCommandCode(uint8_t *buffer);
-void getArguments(uint8_t *buffer);
+bool getArguments(uint8_t *buffer);
+bool isNumber(uint8_t p);
+int parseString(uint8_t *str, int strLength, char splitStrings[5][12]);
+bool streq(char *str1, const char *str2);
 // void led_toggle(TimerHandle_t xTimer);
 void led_toggle_start(uint32_t duration);
 void led_toggle_stop(void);
@@ -122,6 +134,7 @@ void Menue_Task(void *argument);
 void Animation_Task(void *argument);
 void ComdHandle_Task(void *argument);
 void CmdProcess_Task(void *argument);
+void ArgProcess_Task(void *argument);
 // This is the menu
 char menu[] = {"\
 \r\nStart Animation in Terminal     ----> 1 \
@@ -133,9 +146,11 @@ char menu[] = {"\
 \r\nStart Data Logging              ----> 7 \
 \r\nStop data logging               ----> 8 \
 \r\nGet the data logged             ----> 9 \
-\r\nSet Alarm date and tim          ----> 10 \
+\r\nSet Alarm date and time         ----> 10 \
 \r\nClose the terminal              ----> 0 \
 \r\n"};
+
+char genPrintArr[] = {"\r\n"};
 
 char animation[] = {"\
 \r\n*     ---     ---     *\n"};
@@ -145,6 +160,8 @@ uint8_t rx_index = 0;
 uint8_t rx_data = '\r';
 uint8_t LED_ID = 1;
 uint16_t LED_ID_ARRAY[] = {GPIO_PIN_12, GPIO_PIN_13, GPIO_PIN_14, GPIO_PIN_15};
+volatile bool isCmdOrArg = COMMAND;
+uint8_t current_cmd_code = 0;
 
 uint16_t ADC_VAL;
 int indx=1;
@@ -211,8 +228,10 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-  command_queue = xQueueCreate(10, sizeof(APP_CMD_t *));
-  uart_write_queue = xQueueCreate(10, sizeof(char *));
+  argument_queue = xQueueCreate(10, sizeof(APP_CMD_t *));
+  command_queue = xQueueCreate(10, sizeof(uint8_t *));
+  // uart_write_queue = xQueueCreate(10, sizeof(char *));
+
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -222,12 +241,13 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
-  if ((command_queue != NULL) && (uart_write_queue != NULL))
+  if ((command_queue != NULL) && (argument_queue != NULL))
   {
     xTaskCreate(Menue_Task, "MENUE", 512, NULL, 1, &MenueTask_Handler);
     xTaskCreate(Animation_Task, "ANIMATION", 512, NULL, 2, &AnimationTask_Handler);
     xTaskCreate(ComdHandle_Task, "CMDHNDL", 512, NULL, 2, &ComdHandleTask_Handler);
     xTaskCreate(CmdProcess_Task, "CMDPROCESS", 512, NULL, 2, &CmdProcessTask_Handler);
+    xTaskCreate(ArgProcess_Task, "ARGROCESS", 512, NULL, 2, &ArgProcessTask_Handler);
     vTaskStartScheduler();
   }
   else
@@ -590,17 +610,70 @@ void msDelay(uint32_t msTime)
 
 uint8_t getCommandCode(uint8_t *buffer)
 {
-
-  return buffer[0] - 48;
+  // maximum number of command supported 99
+  uint8_t cnt = 0;
+  while(buffer[cnt] != '\r'){
+    cnt++;
+    if(cnt > 2) return INVALID_COMMAND;
+  }
+  if(cnt == 1) return (buffer[0] - 48);
+  else {
+    return (buffer[0] - 48) * 10 + (buffer[1] - 48);
+  }
 }
 
-void getArguments(uint8_t *buffer)
+bool getArguments(uint8_t *buffer)
 {
-  uint8_t cnt = 1;
+  uint8_t cnt = 0;
   while(rx_buffer[cnt] != '\r'){
     cnt++;
-    buffer[cnt-1] = rx_buffer[cnt] - 48;
   }
+  cnt = cnt + 1;
+  char splitStrings[5][12] = {{0}};
+  int cntArg = parseString(rx_buffer, cnt, splitStrings);
+
+  if(cntArg < 1) return false;
+
+  for (int i = 0; i < cntArg; i++)
+  {
+    buffer[i] = atoi(splitStrings[i]);
+  }
+  return true;
+}
+
+bool isNumber(uint8_t p)
+{
+  if(p >= 48 && p <= 57) return true;
+  return false;
+}
+
+int parseString(uint8_t *str, int strLength, char splitStrings[5][12])
+{
+    int i = 0, j = 0, cnt = 0;
+    int rows = 5;
+    int colums = 12;
+
+    for (i = 0; i < strLength && cnt < rows && j < colums; i++)
+    {
+        // if space or NULL found, assign NULL into splitStrings[cnt]
+        if (str[i] == ' ' || str[i] == '\0' || str[i] == 13) // 13 is for checking carriage return
+        {
+            splitStrings[cnt][j] = '\0';
+            cnt++; // for next word
+            j = 0; // for next word, init index to 0
+        }
+        else
+        {
+            splitStrings[cnt][j] = str[i];
+            j++;
+        }
+    }
+    return cnt;
+}
+
+bool streq(char *str1, const char *str2)
+{
+    return (strcmp(str1, str2) == 0);
 }
 
 void Menue_Task(void *argument)
@@ -677,7 +750,7 @@ void Animation_Task(void *argument)
 
 void ComdHandle_Task(void *argument)
 {
-  uint8_t command_code = 0;
+  uint8_t command_code = INVALID_COMMAND;
 
   APP_CMD_t *new_cmd;
 
@@ -687,14 +760,36 @@ void ComdHandle_Task(void *argument)
     // 1. send command to queue
     new_cmd = (APP_CMD_t *)pvPortMalloc(sizeof(APP_CMD_t));
 
-    taskENTER_CRITICAL();
-    command_code = getCommandCode(rx_buffer);
-    new_cmd->COMMAND_NUM = command_code;
-    getArguments(new_cmd->COMMAND_ARGS);
-    taskEXIT_CRITICAL();
+    if(isCmdOrArg == COMMAND){
+      taskENTER_CRITICAL();
+      command_code = getCommandCode(rx_buffer);
+      if(command_code == INVALID_COMMAND){
+        isCmdOrArg = COMMAND;
+        char *str = "\nPlease enter the correct command...\r\n";
+        HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);        
+        taskEXIT_CRITICAL();
+        continue;
+      }
+      current_cmd_code = command_code;
+      taskEXIT_CRITICAL();
 
-    // send the command to the command queue
-    xQueueSend(command_queue, &new_cmd, portMAX_DELAY);
+      // send the command to the command queue
+      xQueueSend(command_queue, &command_code, portMAX_DELAY);
+    } else if(isCmdOrArg == ARGUMENT){
+      taskENTER_CRITICAL();
+      if(getArguments(new_cmd->COMMAND_ARGS) == false){
+        isCmdOrArg = ARGUMENT;
+        char *str = "\nPlease enter the correct argumant/s...\r\n";
+        HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);        
+        taskEXIT_CRITICAL();
+        continue;
+      }
+      isCmdOrArg = COMMAND;
+      taskEXIT_CRITICAL();
+      xQueueSend(argument_queue, &new_cmd, portMAX_DELAY);
+    } else {
+      // do nothing
+    }
   }
 }
 
@@ -703,65 +798,167 @@ void CmdProcess_Task(void *argument)
   while (1)
   {
     APP_CMD_t *cmd;
-    xQueueReceive(command_queue, &cmd, portMAX_DELAY);
-    if (cmd->COMMAND_NUM == 1)
+    uint8_t cmd_code;
+    xQueueReceive(command_queue, &cmd_code, portMAX_DELAY);
+    if (cmd_code == 1)
+    {
+      isCmdOrArg = COMMAND;
+      char *str = "\nStraing the Animation...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);      
+      xTaskNotify(AnimationTask_Handler, 0, eNoAction);
+    }
+    else if (cmd_code == 2)
+    {
+      isCmdOrArg = ARGUMENT;
+      char *str = "\nPlease enter LED Id {space} blink rate in ms...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd_code == 3)
+    {
+      isCmdOrArg = COMMAND;
+      char *str = "\nStoping all the blinking LEDs...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      led_toggle_stop();
+    }
+    else if (cmd_code == 4)
+    {
+      isCmdOrArg = COMMAND;
+      char *str = "\nCurrent date and time are following...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      getDateTime();
+    }
+    else if (cmd_code == 5)
+    {
+      isCmdOrArg = ARGUMENT;
+      char *str = "\nPlease enter the date in dd/mm/yy formate seperated by space...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd_code == 6)
+    {
+      isCmdOrArg = ARGUMENT;
+      char *str = "\nPlease enter the current time in hh/mm/ss formate (24 hr) seperated by space...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd_code == 7)
+    {
+      isCmdOrArg = ARGUMENT;
+      char *str = "\nPlease enter the data logging interval in ms...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      // startSensorDataLogging(cmd->COMMAND_ARGS[1]);
+    }
+    else if (cmd_code == 8)
+    {
+      isCmdOrArg = COMMAND;
+      char *str = "\nStopping sensor data logging...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      stopSensorDataLogging();
+    }
+    else if (cmd_code == 9)
+    {
+      isCmdOrArg = COMMAND;
+      char *str = "\nGetting the logged senspr data...\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd_code == 10)
+    {
+      isCmdOrArg = ARGUMENT;
+      char *str[] = {"\
+      \r\nChoose the envent to trigger on alarm...\
+      \r\nSet to close app                ----> 1 \
+      \r\nSet to stop data logging        ----> 2 \
+      \r\nSet to start data logging       ----> 3 \
+      \r\nset to stop all blinking LEDs   ----> 4 \
+      \r\n"};
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    else if (cmd_code == 0)
+    {
+      isCmdOrArg = COMMAND;
+      char *str = "\nClosing the terminal... Need to restart the MCU\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      deleteAllTasks();
+    }    
+    else
+    {
+      isCmdOrArg = COMMAND;
+      char *str = "\nWrong command entered, Please enter valid command\r\n";
+      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    if(isCmdOrArg == COMMAND){
+      xTaskNotify(MenueTask_Handler, 0, eNoAction);
+    }
+  }
+}
+
+void ArgProcess_Task(void *argument)
+{
+  while (1)
+  {
+    APP_CMD_t *cmd;
+    bool checkCmdMatched = true;
+    xQueueReceive(argument_queue, &cmd, portMAX_DELAY);
+    if (current_cmd_code == 1)
     {
       char *str = "\nStraing the Animation...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);      
       xTaskNotify(AnimationTask_Handler, 0, eNoAction);
     }
-    else if (cmd->COMMAND_NUM == 2)
+    else if (current_cmd_code == 2)
     {
       char *str = "\nBlinking the LED...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      LED_ID = cmd->COMMAND_ARGS[1];
-      led_toggle_start(cmd->COMMAND_ARGS[3]);
+      LED_ID = cmd->COMMAND_ARGS[0];
+      led_toggle_start(cmd->COMMAND_ARGS[1]);
     }
-    else if (cmd->COMMAND_NUM == 3)
+    else if (current_cmd_code == 3)
     {
       char *str = "\nStoping the LEDs...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
       led_toggle_stop();
     }
-    else if (cmd->COMMAND_NUM == 4)
+    else if (current_cmd_code == 4)
     {
       char *str = "\nCurrent date and time...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
       getDateTime();
     }
-    else if (cmd->COMMAND_NUM == 5)
+    else if (current_cmd_code == 5)
     {
       char *str = "\nSetting the current date...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      // cmd->COMMAND_ARGS[0];
     }
-    else if (cmd->COMMAND_NUM == 6)
+    else if (current_cmd_code == 6)
     {
       char *str = "\nSetting the current time...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      // cmd->COMMAND_ARGS[0];
     }
-    else if (cmd->COMMAND_NUM == 7)
+    else if (current_cmd_code == 7)
     {
       char *str = "\nStarting sensor data logging...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      startSensorDataLogging(cmd->COMMAND_ARGS[1]);
+      startSensorDataLogging(cmd->COMMAND_ARGS[0]);
     }
-    else if (cmd->COMMAND_NUM == 8)
+    else if (current_cmd_code == 8)
     {
       char *str = "\nStopping sensor data logging...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
       stopSensorDataLogging();
     }
-    else if (cmd->COMMAND_NUM == 9)
+    else if (current_cmd_code == 9)
     {
       char *str = "\nGetting the data logged...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      // cmd->COMMAND_ARGS[0];
     }
-    else if (cmd->COMMAND_NUM == 10)
+    else if (current_cmd_code == 10)
     {
       char *str = "\nSetting Alarm timing...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      // cmd->COMMAND_ARGS[0];
     }
-    else if (cmd->COMMAND_NUM == 0)
+    else if (current_cmd_code == 0)
     {
       char *str = "\nClosing the terminal... Need to restart the MCU\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
@@ -769,8 +966,12 @@ void CmdProcess_Task(void *argument)
     }    
     else
     {
+      checkCmdMatched = false;
       char *str = "\nWrong command entered, Please enter valid command\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    }
+    if(checkCmdMatched == true){
+      xTaskNotify(MenueTask_Handler, 0, eNoAction);
     }
   }
 }
@@ -800,7 +1001,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     {
       rx_index = 0;
       // xTaskNotifyFromISR(AnimationTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
-      xTaskNotifyFromISR(MenueTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
+      // xTaskNotifyFromISR(MenueTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
       xTaskNotifyFromISR(ComdHandleTask_Handler, 0, eNoAction, &xHigherPriorityTaskWoken);
     }
 
