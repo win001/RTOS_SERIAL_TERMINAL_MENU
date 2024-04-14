@@ -26,3 +26,11 @@
 11. Why initially (default) animation is getting printed
 
 12. see how global variables accessed in rtos
+
+13. pass the command value to queue by address
+
+14. check once uart_print_queue creation and its size
+
+15. set date and time binary/decimal locha
+
+16. get weekday in non-numeric formate

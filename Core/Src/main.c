@@ -77,6 +77,7 @@ typedef struct APP_CMD
 #define LED_COUNT 4
 
 TaskHandle_t MenueTask_Handler;
+TaskHandle_t printTask_Handler;
 TaskHandle_t AnimationTask_Handler;
 TaskHandle_t ComdHandleTask_Handler;
 TaskHandle_t CmdProcessTask_Handler;
@@ -84,7 +85,7 @@ TaskHandle_t ArgProcessTask_Handler;
 
 QueueHandle_t command_queue = NULL;
 QueueHandle_t argument_queue = NULL;
-QueueHandle_t uart_write_queue = NULL;
+QueueHandle_t uart_print_queue = NULL;
 
 void led1_toggle(TimerHandle_t xTimer);
 void led2_toggle(TimerHandle_t xTimer);
@@ -115,6 +116,8 @@ bool getArguments(uint8_t *buffer);
 bool isNumber(uint8_t p);
 int parseString(uint8_t *str, int strLength, char splitStrings[5][12]);
 bool streq(char *str1, const char *str2);
+void setCurrentTime(uint8_t *buffer);
+void setCurrentDate(uint8_t *buffer);
 // void led_toggle(TimerHandle_t xTimer);
 void led_toggle_start(uint32_t duration);
 void led_toggle_stop(void);
@@ -131,6 +134,7 @@ void vApplicationGetTimerTaskMemory( StaticTask_t ** ppxTimerTaskTCBBuffer,
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void Menue_Task(void *argument);
+void PrintTask_Task(void *argument);
 void Animation_Task(void *argument);
 void ComdHandle_Task(void *argument);
 void CmdProcess_Task(void *argument);
@@ -229,8 +233,8 @@ int main(void)
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   argument_queue = xQueueCreate(10, sizeof(APP_CMD_t *));
-  command_queue = xQueueCreate(10, sizeof(uint8_t *));
-  // uart_write_queue = xQueueCreate(10, sizeof(char *));
+  command_queue = xQueueCreate(10, sizeof(uint8_t));
+  uart_print_queue = xQueueCreate(10, sizeof(char[10]));
 
   /* USER CODE END RTOS_QUEUES */
 
@@ -241,9 +245,10 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
-  if ((command_queue != NULL) && (argument_queue != NULL))
+  if ((command_queue != NULL) && (argument_queue != NULL) && (uart_print_queue != NULL))
   {
     xTaskCreate(Menue_Task, "MENUE", 512, NULL, 1, &MenueTask_Handler);
+    xTaskCreate(PrintTask_Task, "PRINTMENUE", 512, NULL, 2, &printTask_Handler);
     xTaskCreate(Animation_Task, "ANIMATION", 512, NULL, 2, &AnimationTask_Handler);
     xTaskCreate(ComdHandle_Task, "CMDHNDL", 512, NULL, 2, &ComdHandleTask_Handler);
     xTaskCreate(CmdProcess_Task, "CMDPROCESS", 512, NULL, 2, &CmdProcessTask_Handler);
@@ -676,6 +681,33 @@ bool streq(char *str1, const char *str2)
     return (strcmp(str1, str2) == 0);
 }
 
+void setCurrentTime(uint8_t *buffer)
+{
+  RTC_TimeTypeDef sTime = {0};
+  sTime.Hours = buffer[0];
+  sTime.Minutes = buffer[1];
+  sTime.Seconds = buffer[2];
+  sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+  sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+void setCurrentDate(uint8_t *buffer)
+{
+  RTC_DateTypeDef sDate = {0};
+  sDate.WeekDay = buffer[3];//RTC_WEEKDAY_MONDAY;
+  sDate.Month = buffer[1];
+  sDate.Date = buffer[0];
+  sDate.Year = buffer[2];
+  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
 void Menue_Task(void *argument)
 {
   //	uint8_t *strtosend = "IN HPT===========================\n";
@@ -686,6 +718,18 @@ void Menue_Task(void *argument)
     HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
     xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
     //		vTaskDelay(1500);
+  }
+}
+
+void PrintTask_Task(void *argument)
+{
+  while (1)
+  {
+    char *str;
+    xQueueReceive(uart_print_queue, &str, portMAX_DELAY);
+    HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+    vPortFree(str);
+    // xTaskNotify(MenueTask_Handler, 0, eNoAction);
   }
 }
 
@@ -759,6 +803,7 @@ void ComdHandle_Task(void *argument)
     xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
     // 1. send command to queue
     new_cmd = (APP_CMD_t *)pvPortMalloc(sizeof(APP_CMD_t));
+    // &command_code = pvPortMalloc(sizeof(uint8_t));
 
     if(isCmdOrArg == COMMAND){
       taskENTER_CRITICAL();
@@ -862,14 +907,17 @@ void CmdProcess_Task(void *argument)
     else if (cmd_code == 10)
     {
       isCmdOrArg = ARGUMENT;
-      char *str[] = {"\
+      char *strp;
+      strp = pvPortMalloc(sizeof (char[500]));
+      char str[] = {"\
       \r\nChoose the envent to trigger on alarm...\
       \r\nSet to close app                ----> 1 \
       \r\nSet to stop data logging        ----> 2 \
       \r\nSet to start data logging       ----> 3 \
       \r\nset to stop all blinking LEDs   ----> 4 \
       \r\n"};
-      HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
+      strcpy(strp, str);
+      xQueueSend(uart_print_queue, &strp, portMAX_DELAY);
     }
     else if (cmd_code == 0)
     {
@@ -926,13 +974,13 @@ void ArgProcess_Task(void *argument)
     {
       char *str = "\nSetting the current date...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      // cmd->COMMAND_ARGS[0];
+      setCurrentDate(cmd->COMMAND_ARGS);
     }
     else if (current_cmd_code == 6)
     {
       char *str = "\nSetting the current time...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      // cmd->COMMAND_ARGS[0];
+      setCurrentTime(cmd->COMMAND_ARGS);
     }
     else if (current_cmd_code == 7)
     {
@@ -973,6 +1021,7 @@ void ArgProcess_Task(void *argument)
     if(checkCmdMatched == true){
       xTaskNotify(MenueTask_Handler, 0, eNoAction);
     }
+    vPortFree(cmd);
   }
 }
 
@@ -1129,11 +1178,14 @@ void getDateTime(void)
   RTC_TimeTypeDef stimestructureget;
   char date[20];
   char time[20];
+  char weekday[20];
   HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BIN);
   HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BIN);
   sprintf(date, "Date: %02d-%02d-%02d\r\n", sdatestructureget.Date, sdatestructureget.Month, sdatestructureget.Year);
+  sprintf(weekday, "Weekday: %02d\r\n", sdatestructureget.WeekDay);
   sprintf(time, "Time: %02d:%02d:%02d\r\n", stimestructureget.Hours, stimestructureget.Minutes, stimestructureget.Seconds);
   HAL_UART_Transmit(&huart2, date, strlen(date), HAL_MAX_DELAY);
+  HAL_UART_Transmit(&huart2, weekday, strlen(weekday), HAL_MAX_DELAY);
   HAL_UART_Transmit(&huart2, time, strlen(time), HAL_MAX_DELAY);
 }
 /*-----------------------------------------------------------*/
