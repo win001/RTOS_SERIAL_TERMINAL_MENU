@@ -67,7 +67,7 @@ UART_HandleTypeDef huart2;
 typedef struct APP_CMD
 {
   uint8_t COMMAND_NUM;
-  uint8_t COMMAND_ARGS[10];
+  uint8_t COMMAND_ARGS[25];
 } APP_CMD_t;
 // typedef struct APP_ARG
 // {
@@ -118,6 +118,7 @@ int parseString(uint8_t *str, int strLength, char splitStrings[5][12]);
 bool streq(char *str1, const char *str2);
 void setCurrentTime(uint8_t *buffer);
 void setCurrentDate(uint8_t *buffer);
+void setCurrentAlarm(uint8_t *buffer);
 // void led_toggle(TimerHandle_t xTimer);
 void led_toggle_start(uint32_t duration);
 void led_toggle_stop(void);
@@ -141,18 +142,20 @@ void CmdProcess_Task(void *argument);
 void ArgProcess_Task(void *argument);
 // This is the menu
 char menu[] = {"\
-\r\nStart Animation in Terminal     ----> 1 \
-\r\nBlink LEDs ID space Delay       ----> 2 \
-\r\nStop all LEDs blinking          ----> 3 \
-\r\nGet current date and time       ----> 4 \
-\r\nSet the current date            ----> 5 \
-\r\nSet the current time            ----> 6 \
-\r\nStart Data Logging              ----> 7 \
-\r\nStop data logging               ----> 8 \
-\r\nGet the data logged             ----> 9 \
-\r\nSet Alarm date and time         ----> 10 \
-\r\nClose the terminal              ----> 0 \
+\r\n1.  ----> Start Animation in Terminal   \
+\r\n2.  ----> Blink LEDs ID space Delay     \
+\r\n3.  ----> Stop all LEDs blinking        \
+\r\n4.  ----> Get current date and time     \
+\r\n5.  ----> Set the current date          \
+\r\n6.  ----> Set the current time          \
+\r\n7.  ----> Start Data Logging            \
+\r\n8.  ----> Stop data logging             \
+\r\n9.  ----> Get the data logged           \
+\r\n10. ----> Set Alarm date and time       \
+\r\n11. ----> Close the terminal            \
 \r\n"};
+
+char *weekDaysName[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
 
 char genPrintArr[] = {"\r\n"};
 
@@ -708,6 +711,26 @@ void setCurrentDate(uint8_t *buffer)
   }
 }
 
+void setCurrentAlarm(uint8_t *buffer)
+{
+  RTC_AlarmTypeDef sAlarm = {0};
+  sAlarm.AlarmTime.Hours = buffer[0];
+  sAlarm.AlarmTime.Minutes = buffer[1];
+  sAlarm.AlarmTime.Seconds = buffer[2];
+  sAlarm.AlarmTime.SubSeconds = 0x0;
+  sAlarm.AlarmTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+  sAlarm.AlarmTime.StoreOperation = RTC_STOREOPERATION_RESET;
+  sAlarm.AlarmMask = RTC_ALARMMASK_NONE;
+  sAlarm.AlarmSubSecondMask = RTC_ALARMSUBSECONDMASK_ALL;
+  sAlarm.AlarmDateWeekDaySel = RTC_ALARMDATEWEEKDAYSEL_DATE;
+  sAlarm.AlarmDateWeekDay = buffer[3];
+  sAlarm.Alarm = RTC_ALARM_A;
+  if (HAL_RTC_SetAlarm_IT(&hrtc, &sAlarm, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
 void Menue_Task(void *argument)
 {
   //	uint8_t *strtosend = "IN HPT===========================\n";
@@ -807,14 +830,15 @@ void ComdHandle_Task(void *argument)
 
     if(isCmdOrArg == COMMAND){
       taskENTER_CRITICAL();
-      command_code = getCommandCode(rx_buffer);
-      if(command_code == INVALID_COMMAND){
+      // command_code = getCommandCode(rx_buffer);
+      if(getArguments(new_cmd->COMMAND_ARGS) == false){
         isCmdOrArg = COMMAND;
         char *str = "\nPlease enter the correct command...\r\n";
         HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);        
         taskEXIT_CRITICAL();
         continue;
       }
+      command_code = new_cmd->COMMAND_ARGS[0];
       current_cmd_code = command_code;
       taskEXIT_CRITICAL();
 
@@ -1004,7 +1028,7 @@ void ArgProcess_Task(void *argument)
     {
       char *str = "\nSetting Alarm timing...\r\n";
       HAL_UART_Transmit(&huart2, str, strlen(str), HAL_MAX_DELAY);
-      // cmd->COMMAND_ARGS[0];
+      setCurrentAlarm(cmd->COMMAND_ARGS);
     }
     else if (current_cmd_code == 0)
     {
@@ -1137,13 +1161,25 @@ void log_sensor_data(TimerHandle_t xTimer)
 {
   // int indx=1;
 
+  RTC_DateTypeDef sdatestructureget;
+  RTC_TimeTypeDef stimestructureget;
+  char date[20];
+  char time[20];
+  char weekday[20];
+  HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BIN);
+  HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BIN);
+  sprintf(date, "Date: %02d-%02d-%02d", sdatestructureget.Date, sdatestructureget.Month, sdatestructureget.Year);
+  sprintf(weekday, "Weekday: %s", weekDaysName[sdatestructureget.WeekDay]);
+  sprintf(time, "Time: %02d:%02d:%02d", stimestructureget.Hours, stimestructureget.Minutes, stimestructureget.Seconds);
+  
+
   HAL_ADC_Start(&hadc1);
   HAL_ADC_PollForConversion(&hadc1, 10);
   ADC_VAL = HAL_ADC_GetValue(&hadc1);
   HAL_ADC_Stop(&hadc1);
 
   char *buffer = pvPortMalloc(50*sizeof(char));
-  sprintf (buffer, "%d. %u\n", indx,ADC_VAL);
+  sprintf (buffer, "%d. (%s %s) --> %u\n", indx, date, time, ADC_VAL);
   Mount_SD("/");
   // Check_SD_Space();
   Update_File("ADC_DATA.TXT", buffer);
@@ -1182,7 +1218,7 @@ void getDateTime(void)
   HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BIN);
   HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BIN);
   sprintf(date, "Date: %02d-%02d-%02d\r\n", sdatestructureget.Date, sdatestructureget.Month, sdatestructureget.Year);
-  sprintf(weekday, "Weekday: %02d\r\n", sdatestructureget.WeekDay);
+  sprintf(weekday, "Weekday: %s\r\n", weekDaysName[sdatestructureget.WeekDay]);
   sprintf(time, "Time: %02d:%02d:%02d\r\n", stimestructureget.Hours, stimestructureget.Minutes, stimestructureget.Seconds);
   HAL_UART_Transmit(&huart2, date, strlen(date), HAL_MAX_DELAY);
   HAL_UART_Transmit(&huart2, weekday, strlen(weekday), HAL_MAX_DELAY);
